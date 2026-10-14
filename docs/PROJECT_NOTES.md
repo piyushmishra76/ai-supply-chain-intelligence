@@ -304,3 +304,56 @@ Understand demand trends, weekday patterns, and monthly sales variation using th
 - Analyze monthly patterns by year.
 - Continue exploratory analysis of demand distributions and event effects.
 - Compare forecasting models against the established baseline metrics.
+
+### Zero-Sales Date Investigation
+
+- Found 5 dates with zero total sales in the 1,000-series sample.
+- All five dates are December 25, from 2011 through 2015.
+- Each date contains 1,000 observations, with zero positive-sales series.
+- The repeated annual pattern suggests a systematic Christmas-day effect rather than random missing data.
+- The exact operational cause will be verified using the calendar information.
+- Zero-sales observations are retained because they may represent genuine demand and operating-calendar behavior.
+
+**Limitation:** Findings apply to the current California-only sample of 1,000 product series.
+
+### Sales Distribution Findings
+
+- Approximately 67.21% of product-store-day observations have zero sales.
+- Low daily sales quantities are much more common than high quantities.
+- The distribution is strongly right-skewed, with a small tail of higher-sales observations.
+- This indicates sparse/intermittent demand and motivates evaluating multiple forecasting approaches.
+- Findings apply to the California-only sample of 1,000 product series.
+
+### Model Comparison — First Experiment
+
+**Dataset:** 1,000 sampled California product series
+**Evaluation:** Chronological validation; rolling one-day-ahead forecasting setup
+
+| Model | MAE | RMSE | WAPE | R² |
+|---|---:|---:|---:|---:|
+| Zero-demand baseline | 1.1755 | 2.8951 | 100.00% | -0.1974 |
+| Weekly-naive baseline | 1.1761 | 2.7130 | 100.06% | -0.0515 |
+| LightGBM | 0.9525 | 1.9723 | 81.04% | 0.4443 |
+| XGBoost | 0.9516 | 1.9787 | 80.96% | 0.4407 |
+
+**Observations**
+- Both boosting models outperform the two simple baselines on MAE, RMSE and WAPE.
+- XGBoost has marginally lower MAE and WAPE.
+- LightGBM has marginally lower RMSE and higher R².
+- The differences between the two boosting models are small.
+- LightGBM currently remains the provisional preferred model when considering RMSE and predictive performance together.
+
+**Limitations**
+- Results apply to the current California-only sample of 1,000 product series.
+- The validation period was used for early stopping and model comparison; these are development results, not final independent test results.
+- A final chronological holdout and evaluation on a broader dataset are needed before making stronger performance claims.
+
+The official goal of the M5 dataset project is to predict the next 28 days of demand for every item.
+
+Because tree-based models like LightGBM only output a single prediction at a time, predicting a full 28-day horizon means you have to choose one of two distinct forecasting strategies:
+
+The Recursive Approach (Complex but uses recent data): You train the model to predict just the next day (Day 1). Once you predict Day 1, you plug that prediction back into your dataset to calculate a new sales_lag_1 and rolling_mean_7, which you then use to predict Day 2. You repeat this loop 28 times. The downside is that if your Day 1 prediction is slightly wrong, the error compounds over the 28 days.
+
+The Direct Approach (Simpler and highly stable): You predict all 28 days at once, but you drop any lag features that are less than 28 days old. If you look at your feature list, you are currently using sales_lag_1 and sales_lag_7. If you are predicting Day 15 of your horizon, you won't actually know what the sales were 1 or 7 days prior because they haven't happened yet. In a direct approach, your most recent lag feature would be sales_lag_28.
+
+we will use the direct approach predicting for the next 28 days demand

@@ -1,0 +1,187 @@
+1. First, understand the problem we're solving
+Imagine you manage a supermarket. You sell thousands of products across different stores.
+You need to answer:
+- How many units of each product will each store sell tomorrow?
+- How many units will they sell over the next 28 days?
+- Which products might run out of stock?
+- When should you reorder products?
+Our first task is to build the demand forecasting model. Inventory risk and reorder recommendations will come afterward.
+Your M5 dataset gives us historical daily sales for 30,490 item-store combinations.
+For example:
+ILLUSTRATIVE SALES DATA
+Day	Product	Store	Units sold
+d_100	Item A	CA_1	5
+d_101	Item A	CA_1	3
+d_102	Item A	CA_1	0
+d_103	Item A	CA_1	7
+These numbers are just an example, not actual observations from your dataset.
+
+We want the model to learn patterns from historical sales and use them to predict future sales.
+2. How does LightGBM learn?
+You already created features such as sales_lag_1, sales_lag_7, and rolling_mean_7. These are useful because yesterday's sales, last week's sales, and recent demand can help predict tomorrow's demand.
+Suppose we have this training example:
+Feature	Value
+Product	Item A
+Store	CA_1
+Month	5
+Sales yesterday (sales_lag_1)	4
+Sales 7 days ago (sales_lag_7)	6
+Average sales in previous 7 days	3.5
+Target: today's sales (sales)	5
+The model receives the input features and tries to predict the target, which is sales.
+It learns from millions of historical examples:
+\[
+\text{Past sales + product + date information}
+\longrightarrow \text{Today's sales}
+\]
+
+We will train one global LightGBM model across all stores and products, instead of training 30,490 individual models.
+Because item_id and store_id are included as categorical features, the model can learn differences between products and locations.
+3. What does a 28-day forecast actually mean?
+This is the most important concept to understand.
+Suppose our last observed day is d_1913. We now want to forecast sales for d_1914 through d_1941.
+Known history
+d_1885 through d_1913
+We know actual sales and can calculate historical features.
+
+
+First prediction
+Predict d_1914
+Use sales history, calendar features and the other inputs available for that date.
+
+
+Second prediction
+Predict d_1915
+Use actual history through d_1913 plus our prediction for d_1914.
+
+
+Repeat
+Continue until d_1941
+Feed previous predictions into subsequent lag and rolling features, producing all 28 future days.
+
+
+Why do we need to do this?
+When predicting day 20, we won't know the actual sales of day 19 in advance. Therefore, we use our predicted day-19 sales to construct day-20 features.
+This is called recursive forecasting.
+One disadvantage is that prediction errors can accumulate over 28 days. That is one of the reasons we must evaluate the model carefully before using it for business decisions.
+4. How do we know whether the model is good?
+We can't simply train the model on all historical data and look at its predictions on that same data. That would not tell us how well it forecasts unseen days.
+Instead, we simulate a real forecasting situation using historical data.
+TRAINING PERIOD
+d_1521 – d_1885
+The model learns from historical examples in this initial, memory-conscious baseline.
+
+
+VALIDATION PERIOD
+d_1886 – d_1913
+We hide these 28 days' actual sales from the forecast inputs and predict them sequentially.
+
+
+EVALUATION
+Predictions vs. actual sales
+After predictions are complete, compare them against the actual observed sales for all products and stores.
+
+
+We'll measure errors with metrics such as MAE and RMSE, and also use a suitable aggregate metric for demand forecasting. We should not judge the model only by training loss.
+Important: The 365-day training period is an initial practical choice to limit memory use on your laptop. It isn't guaranteed to be optimal. Once the pipeline works, we can test whether using a longer historical training period improves results.
+Also, we'll preserve all item-store series; we're not going back to a 1,000-item-only project.
+5. Where do your 100 Parquet files fit into this?
+You've already completed a major part of the project.
+Completed: historical data preparation
+58,327,370 rows across 100 files, with calendar, prices and engineered demand features. We also corrected and validated the cross-store history issue.
+
+
+Next: select the training rows
+Read only the necessary portions of your Parquet dataset instead of loading all 58.3 million rows into pandas at once.
+
+
+Then: train and test LightGBM
+Start with Tweedie, test the recursive 28-day validation, and compare results against reasonable baselines.
+
+
+Finally: forecast future demand
+Prepare future dates from the calendar and available price information, generate 853,720 predictions, then develop the inventory and reorder logic.
+
+
+
+One additional technical detail: your existing feature files only contain sales observations through d_1913. To predict future dates, we must create new rows for those dates using the available calendar, event, SNAP and price data. We cannot just ask the existing historical Parquet files to predict dates they don't contain.
+6. What should you do right now?
+Don't run any more code yet. You don't need to rebuild your feature files; they have already passed our structural checks.
+Remember these three things:
+1. LightGBM learns the relationship between historical features and daily sales.
+2. We test the model by simulating a 28-day forecast without using the actual sales from those future validation days as inputs.
+3. Once the test is satisfactory, we retrain on recent observed history and recursively forecast the next 28 days for every item-store combination.
+
+
+
+
+
+
+. What happens before feeding data to LightGBM?
+This is the core inference pipeline.
+Step 1 — Receive forecast request
+Product, store, as-of date, horizon
+
+Step 2 — Fetch data
+Sales history, product/store metadata, calendar and prices
+
+Step 3 — Engineer model features
+Lags, rolling averages, time features, events, SNAP and price features
+
+Step 4 — Apply the saved category mappings
+Maintain the exact feature names, order, and category codes from training
+
+Step 5 — Call LightGBM
+Generate the first day's demand predictions
+
+Step 6 — Repeat for all 28 days
+Feed predictions into future lag and rolling features
+
+
+Example of building features
+Suppose the backend is generating a prediction for the first future day.
+It calculates:
+sales_lag_1 = latest_actual_salessales_lag_7 = sales_from_7_days_agosales_lag_28 = sales_from_28_days_agorolling_mean_7 = average_of_previous_7_salesrolling_mean_28 = average_of_previous_28_sales
+
+
+
+It also fills in the product and store categories, date fields, event information, SNAP status, and available price features.
+The resulting DataFrame must contain exactly the feature columns used during training, in the same order. It is then passed to:
+predictions = model.predict(X_future)
+
+
+
+For day 2, the backend uses day 1's predicted sales, not its unknown actual sales, when updating the history. It repeats this for all 28 days.
+That recursive loop is essential to evaluate and operate our 28-day forecasting model correctly.
+4. What should the backend return?
+For a small request, it can return predictions directly:
+{
+  "store_id": "CA_1",
+  "item_id": "FOODS_1_001",
+  "horizon": 28,
+  "forecasts": [
+    {
+      "forecast_date": "2016-04-25",
+      "predicted_sales": 1.42
+    },
+    {
+      "forecast_date": "2016-04-26",
+      "predicted_sales": 1.31
+    }
+  ]
+}
+
+
+The numbers here are illustrative, not actual model predictions.
+If a request covers every item in every store, the system would generate 853,720 forecasts. In that case, it is more practical to save the predictions in a database and return a forecast-job ID or a download link rather than send the entire result in one API response.
+5. What about inventory risk and reorder recommendations?
+Those come after forecasting. Our M5 dataset provides historical sales and prices, but it does not provide real current stock levels, supplier lead times, or outstanding purchase orders.
+To make real inventory recommendations, we'll need another set of operational inputs:
+Information	Why it is needed
+Current on-hand inventory	Know how much stock is available
+Incoming purchase orders	Account for stock already on its way
+Supplier lead time	Estimate demand until the next delivery
+Safety-stock policy	Allow a buffer against uncertainty
+Order constraints	Respect minimum orders and package sizes
+We should keep forecasting and inventory decision logic as separate services so each can be tested independently.
+Our architecture will therefore be: FastAPI request → database retrieval → feature engineering → trained LightGBM model → recursive 28-day forecasts → saved predictions → inventory-risk and reorder calculations.

@@ -12,3 +12,14 @@ models/*.joblib
 .env
 
 .vscode/
+# Generated datasets
+*.parquet
+*.h5
+*.hdf5
+
+# Trained model artifacts
+models/*.txt
+models/*.bin
+
+# Generated backtest results
+backtest_results/
